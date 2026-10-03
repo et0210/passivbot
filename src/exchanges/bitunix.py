@@ -176,6 +176,9 @@ class BitunixClient:
 
     def __init__(self, config: dict | None = None):
         config = config or {}
+        # This native client is intrinsically Bitunix; provide the exchange id
+        # used by the write barrier even when small test clients omit a config.
+        self.exchange = "bitunix"
         self.apiKey = str(config.get("apiKey") or config.get("key") or "")
         self.secret = str(config.get("secret") or "")
         self.rest_url = str(config.get("restUrl") or self.REST_URL).rstrip("/")
@@ -435,6 +438,11 @@ class BitunixClient:
         private: bool = False,
         cancel: bool = False,
     ) -> Any:
+        # Reject writes before parameter normalization, request signing,
+        # throttling, or session acquisition when the local write barrier is on.
+        from live.write_barrier import guard_native_http_request
+
+        guard_native_http_request(self.exchange, method, path, body=body)
         params = {key: value for key, value in (params or {}).items() if value is not None}
         body_text = (
             json.dumps(body, separators=(",", ":"), ensure_ascii=False)

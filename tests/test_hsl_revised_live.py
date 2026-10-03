@@ -9,7 +9,7 @@ from test_run_fake_live import REPO_ROOT, _cleanup_fake_user_state
 from config_utils import load_config
 from config import prepare_config
 from config.hsl_revised import generated_template
-from live import hsl_revised_live
+from live import executor, hsl_revised_live
 import tools.run_fake_live as runner
 
 
@@ -255,7 +255,7 @@ def test_revised_wave_is_not_execution_authority_after_inputs_change(monkeypatch
 @pytest.mark.parametrize('mode', ['coin', 'pside', 'unified'])
 @pytest.mark.parametrize('raw_balance_drift', [False, True])
 @pytest.mark.parametrize('execution', ['direct', 'owner_refresh_drift'])
-async def test_revised_green_can_plan_entries_without_hsl_history(tmp_path, monkeypatch, mode, raw_balance_drift, execution):
+async def test_revised_green_can_plan_entries_without_hsl_history(tmp_path, monkeypatch, caplog, mode, raw_balance_drift, execution):
     import asyncio
     user = f'fake_revised_green_{tmp_path.name}'
     _cleanup_fake_user_state(user)
@@ -303,6 +303,17 @@ async def test_revised_green_can_plan_entries_without_hsl_history(tmp_path, monk
             assert bot.get_raw_balance() != raw
             assert bot.get_hysteresis_snapped_balance() == strategy
         bot._current_planning_snapshot = snapshot
+        risk_warnings = []
+        original_warning = executor.logging.warning
+
+        def capture_risk_warning(*args, **kwargs):
+            if args and str(args[0]).startswith(
+                "[risk] entry orders deferred by exposure reservation"
+            ):
+                risk_warnings.append(args)
+            return original_warning(*args, **kwargs)
+
+        monkeypatch.setattr(executor.logging, "warning", capture_risk_warning)
         if execution == 'direct':
             await bot.execute_order_plan_to_exchange(cancels, creates)
         else:
@@ -319,7 +330,17 @@ async def test_revised_green_can_plan_entries_without_hsl_history(tmp_path, monk
             monkeypatch.setattr(bot, 'refresh_protective_authoritative_state', drifting_refresh)
             result = await instance.cycle()
             assert result['ordinary_completed']
-        assert any(call['method'] == 'create_order' for call in bot.cca.export_request_log()) == (not raw_balance_drift)
+        # The strategy still produced an entry plan above. Direct execution
+        # reaches the exposure gate, which defers this over-cap batch. The owner
+        # path with a balance drift instead rejects its stale account snapshot
+        # before the executor is called; that is an earlier, independent guard.
+        assert not any(call['method'] == 'create_order' for call in bot.cca.export_request_log())
+        if execution == 'owner_refresh_drift' and raw_balance_drift:
+            assert result['ordinary_executed'] is False
+            assert not risk_warnings
+        else:
+            assert len(risk_warnings) == 1
+            assert risk_warnings[0][1] > 0
         completed.append(True)
         return {'green_entries': True}
 

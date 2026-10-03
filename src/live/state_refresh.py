@@ -46,6 +46,15 @@ def _state_refresh_structured_console_available(bot) -> bool:
     )
 
 
+def _reconcile_exposure_reservations(bot, surfaces) -> None:
+    """Reconcile executor reservations only from a complete committed cohort."""
+    if not {"balance", "positions", "open_orders"}.issubset(set(surfaces)):
+        return
+    from live import exposure_reservations
+
+    exposure_reservations.reconcile_authoritative_snapshot(bot)
+
+
 async def refresh_authoritative_state(bot) -> bool:
     """Refresh authoritative account state before planning/execution."""
     if bot.stop_signal_received:
@@ -126,6 +135,7 @@ async def _refresh_protective_authoritative_state(bot, *, require_balance: bool)
         sorted(bot.positions), now_ms=int(bot.get_exchange_time())
     )
     bot._finalize_authoritative_refresh_consistency(plan)
+    _reconcile_exposure_reservations(bot, plan)
     return True
 
 
@@ -224,6 +234,7 @@ async def refresh_authoritative_state_staged(bot) -> bool:
                 )
         await bot.handle_balance_update(source=balance_source)
     bot._finalize_authoritative_refresh_consistency(plan)
+    _reconcile_exposure_reservations(bot, plan)
     return True
 
 

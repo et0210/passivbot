@@ -58,6 +58,11 @@ from fill_events_manager import (
 from live import candle_ws, executor, market_data, planning_gates, reconciler, state_refresh
 from live.diagnostic_safety import bounded_traceback_detail as _bounded_traceback_detail
 from live import risk_input_recovery, hsl_protection, hsl_revised_live
+from live.write_barrier import (
+    guard_client as guard_exchange_client,
+    record_write_blocked,
+    write_barrier_requested,
+)
 from live.order_churn_gate import (
     ORDER_CHURN_GATE_SUPPORTED_EXCHANGES,
     OrderChurnGateState,
@@ -1368,7 +1373,18 @@ class Passivbot:
         self.stop_signal_received = False
         self.cca = None
         self.ccp = None
+        self.write_barrier_active = write_barrier_requested()
         self.create_ccxt_sessions()
+        if getattr(self, "write_barrier_active", False) or write_barrier_requested():
+            # Install after exchange-specific options/headers are configured,
+            # before any runtime fetch or mutation can run.
+            self.cca = guard_exchange_client(self.cca, self.exchange)
+            self.ccp = guard_exchange_client(self.ccp, self.exchange)
+            logging.warning(
+                "[write-barrier] active | exchange=%s "
+                "policy=allowlisted_reads_deny_all_other_calls",
+                self.exchange,
+            )
         self.debug_mode = False
         self.live_event_debug_profiles = normalize_live_event_debug_profiles(
             os.environ.get(
@@ -3946,7 +3962,14 @@ class Passivbot:
         # should not abort the refresh cycle).
         for _attempt in range(1, 4):
             try:
-                await self.update_exchange_config()  # set hedge mode
+                if getattr(self, "write_barrier_active", False) or write_barrier_requested():
+                    record_write_blocked(
+                        "update_exchange_config",
+                        exchange=self.exchange,
+                        caller="Passivbot._init_markets_account_config",
+                    )
+                else:
+                    await self.update_exchange_config()  # set hedge mode
                 break
             except (RequestTimeout, NetworkError) as e:
                 if _attempt == 3:
@@ -10422,6 +10445,16 @@ class Passivbot:
         if symbols is None:
             symbols = self.active_symbols
         symbols = list(dict.fromkeys(symbols or []))
+        if getattr(self, "write_barrier_active", False) or write_barrier_requested():
+            for symbol in symbols:
+                for operation in ("set_leverage", "set_margin_mode"):
+                    record_write_blocked(
+                        operation,
+                        exchange=self.exchange,
+                        caller="Passivbot.update_exchange_configs",
+                        kwargs={"symbol": symbol},
+                    )
+            return set()
         configured_symbols = set()
         symbols_not_done = [
             x for x in symbols if x not in self.already_updated_exchange_config_symbols

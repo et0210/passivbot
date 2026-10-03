@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import backtest as backtest_module
 
 import sys
 
@@ -39,6 +40,13 @@ from backtest import (
     save_coins_hlcvs_to_cache,
 )
 from hlcvs_manifest import build_hlcvs_manifest, write_hlcvs_manifest
+
+
+def _isolate_cache_root(monkeypatch, tmp_path):
+    """Keep market identity resolution rooted at the checkout while isolating cache IO."""
+    monkeypatch.setattr(
+        backtest_module, "HLCVS_CACHE_ROOT", tmp_path / "caches" / "hlcvs_data"
+    )
 
 # ============================================================================
 # Fixtures
@@ -237,7 +245,7 @@ class TestWarmupSufficiencyGate:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=5000)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=3000)
 
         assert result is not None
@@ -249,7 +257,7 @@ class TestWarmupSufficiencyGate:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=1000)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=5000)
 
         assert result is None
@@ -261,7 +269,7 @@ class TestWarmupSufficiencyGate:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=5000)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=5000)
 
         assert result is not None
@@ -273,7 +281,7 @@ class TestWarmupSufficiencyGate:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=0)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=0)
 
         assert result is not None
@@ -285,7 +293,7 @@ class TestWarmupSufficiencyGate:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=0)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance")
 
         assert result is not None
@@ -306,7 +314,7 @@ class TestLegacyCacheCompatibility:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=5000, write_manifest=False)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
 
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=0)
         assert result is None
@@ -318,7 +326,7 @@ class TestLegacyCacheCompatibility:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=None)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
 
         # Needed warmup > 0 → miss (legacy cache has no warmup metadata)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=100)
@@ -331,7 +339,7 @@ class TestLegacyCacheCompatibility:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / cache_hash[:16]
         _write_fake_cache(str(cache_dir), warmup_minutes=None)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
 
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=0)
         assert result is not None
@@ -348,7 +356,7 @@ class TestLegacyCacheCompatibility:
         with open(meta_path, "w") as f:
             f.write("not valid json{{{")
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=100)
         assert result is None
 
@@ -379,7 +387,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_save_writes_cache_meta(self, tmp_path, monkeypatch):
         """save_coins_hlcvs_to_cache creates cache_meta.json with warmup_minutes."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -407,7 +415,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_save_overwrites_existing_cache(self, tmp_path, monkeypatch):
         """Saving to an existing cache dir overwrites files (ratchet-up)."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -451,7 +459,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_save_does_not_downgrade_existing_warmup(self, tmp_path, monkeypatch):
         """Saving with smaller warmup must not downgrade cache metadata."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -486,7 +494,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_force_overwrite_bypasses_existing_warmup_early_return(self, tmp_path, monkeypatch):
         """Force refetch callers can replace an otherwise sufficient cache."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -525,7 +533,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_interrupted_save_cleans_temp_and_preserves_existing_cache(self, tmp_path, monkeypatch):
         """A pending interrupt during artifact save must not publish partial cache data."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -571,7 +579,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_publish_failure_restores_existing_cache(self, tmp_path, monkeypatch):
         """A failed staged-cache publish must restore the previous cache directory."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -623,7 +631,7 @@ class TestSavePersistsWarmupMetadata:
         self, tmp_path, monkeypatch
     ):
         """A corrupt manifest cache must not take the warmup early-return path."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -664,7 +672,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_save_with_compression(self, tmp_path, monkeypatch):
         """cache_meta.json is written even with compressed cache."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
         cfg["backtest"]["compress_cache"] = True
 
@@ -692,7 +700,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_save_uses_descriptive_cache_dir_name(self, tmp_path, monkeypatch):
         """New cache dirs include exchange, coins, date range, and hash suffix."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC/USDT:USDT", "ETH/USDT:USDT"]
@@ -720,7 +728,7 @@ class TestSavePersistsWarmupMetadata:
 
     def test_save_falls_back_to_count_for_more_than_five_coins(self, tmp_path, monkeypatch):
         """Coin label uses N_coins when the dataset contains more than five coins."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
         coins = [
             "BTC/USDT:USDT",
@@ -768,7 +776,7 @@ class TestRatchetUpEndToEnd:
         5. Load with warmup=3000 → hit (5000 >= 3000).
         6. Load with warmup=5000 → hit (5000 >= 5000).
         """
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]
@@ -838,7 +846,7 @@ class TestDescriptiveDirResolution:
         cache_dir = tmp_path / "caches" / "hlcvs_data" / dir_name
         _write_fake_cache(str(cache_dir), warmup_minutes=100)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         result = load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=50)
 
         assert result is not None
@@ -855,14 +863,14 @@ class TestDescriptiveDirResolution:
         _write_fake_cache(str(cache_dir_a), warmup_minutes=100)
         _write_fake_cache(str(cache_dir_b), warmup_minutes=100)
 
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         with pytest.raises(RuntimeError) as exc:
             load_coins_hlcvs_from_cache(cfg, "binance", warmup_minutes=50)
         assert cache_hash[:16] in str(exc.value)
 
     def test_cache_hit_uses_current_warmup_after_metadata_normalization(self, tmp_path, monkeypatch):
         """Cache hit must apply current run warmup, not stale cached mss warmup."""
-        monkeypatch.chdir(tmp_path)
+        _isolate_cache_root(monkeypatch, tmp_path)
         cfg = _base_config()
 
         coins = ["BTC"]

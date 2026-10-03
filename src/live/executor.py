@@ -8,7 +8,7 @@ import time
 from collections import Counter, defaultdict
 
 from passivbot_exceptions import RestartBotException, FatalBotException
-from live import hsl_protection, hsl_revised_live, position_fill_sync
+from live import exposure_reservations, hsl_protection, hsl_revised_live, position_fill_sync
 from live.diagnostic_safety import bounded_exception_type
 from live.event_bus import EventTypes, ReasonCodes
 from live.fresh_entry_eligibility import FreshEntryEligibilityTrace
@@ -596,6 +596,27 @@ async def execute_order_plan(
     configure_creations: bool = True,
 ):
     """Execute a precomputed order plan against the exchange."""
+    if getattr(bot, "write_barrier_active", False):
+        from live.write_barrier import client_is_guarded, write_barrier_requested
+
+        guarded_clients = (
+            write_barrier_requested()
+            and client_is_guarded(getattr(bot, "cca", None))
+            and (
+                getattr(bot, "ccp", None) is None
+                or client_is_guarded(getattr(bot, "ccp", None))
+            )
+        )
+        if (to_cancel or to_create) and not guarded_clients:
+            from live.write_barrier import WriteBlockedError, record_order_plan_blocked
+
+            record_order_plan_blocked(bot, to_cancel, to_create)
+            raise WriteBlockedError(
+                "execute_order_plan",
+                exchange=getattr(bot, "exchange", "unknown"),
+            )
+        if not guarded_clients:
+            return []
     passivbot_cls = _pb_attr("Passivbot")
     snapshot = getattr(bot, "_current_planning_snapshot", None)
     planned_generation = int(
@@ -1156,6 +1177,24 @@ async def execute_orders_parent(bot, orders: list[dict]) -> list[dict]:
         _orders_removed_by_identity(requested_orders, orders),
         "batch_capacity",
     )
+    requested_orders = list(orders)
+    orders, exposure_blocked, exposure_reason = exposure_reservations.admit_entry_batch(
+        bot, orders
+    )
+    if exposure_blocked:
+        _record_fresh_entry_orders(
+            bot,
+            "record_blocked_orders",
+            exposure_blocked,
+            exposure_reason or "exposure_reservation",
+        )
+        logging.warning(
+            "[risk] entry orders deferred by exposure reservation | blocked=%d reason=%s",
+            len(exposure_blocked),
+            exposure_reason or "limit_or_position_slots",
+        )
+    if not orders:
+        return []
     grouped_orders: dict[str, list[dict]] = defaultdict(list)
     emitted_ts = (
         int(bot.get_exchange_time()) if hasattr(bot, "get_exchange_time") else _utc_ms()
@@ -1275,6 +1314,7 @@ async def execute_orders_parent(bot, orders: list[dict]) -> list[dict]:
     to_return = []
     for idx, (ex, order) in enumerate(zip(res, orders)):
         if isinstance(ex, DeferredOrderCreation):
+            exposure_reservations.record_create_not_sent(bot, order)
             if wave is not None:
                 wave["skipped_create"] = wave.get("skipped_create", 0) + 1
             _record_fresh_entry_orders(
@@ -1294,6 +1334,13 @@ async def execute_orders_parent(bot, orders: list[dict]) -> list[dict]:
         if not bot.did_create_order(ex):
             if isinstance(ex, Exception):
                 reason_code = "result_exception"
+                from live.write_barrier import WriteBlockedError
+
+                if isinstance(ex, WriteBlockedError):
+                    # This application-level denial is definitive: the client
+                    # proxy stopped the call before transport, so its reservation
+                    # was never sent and can be removed from the crash journal.
+                    exposure_reservations.record_create_not_sent(bot, order)
                 passivbot_cls._emit_execution_order_event(
                     bot,
                     event_type=EventTypes.EXECUTION_AMBIGUOUS,
@@ -1317,6 +1364,8 @@ async def execute_orders_parent(bot, orders: list[dict]) -> list[dict]:
                 )
             else:
                 reason_code = _create_rejection_reason(ex)
+                if reason_code == "terminal_rejection":
+                    exposure_reservations.record_create_not_sent(bot, order)
                 event_type = (
                     EventTypes.EXECUTION_CREATE_REJECTED
                     if reason_code == "terminal_rejection"
@@ -1358,6 +1407,7 @@ async def execute_orders_parent(bot, orders: list[dict]) -> list[dict]:
                 sorted(normalized_fields.get("is_none", []))[:12],
             )
         passivbot_cls._record_emitted_order_custom_id(bot, ex, emitted_ts=emitted_ts)
+        exposure_reservations.record_create_ack(bot, order, ex)
         bot.add_to_recent_order_executions(ex)
         passivbot_cls._emit_execution_order_event(
             bot,
@@ -1428,6 +1478,9 @@ async def execute_cancellations_parent(bot, orders: list[dict]) -> list[dict]:
                     "[event] cancellation-capacity emitter failed | error_type=%s",
                     bounded_exception_type(exc),
                 )
+    # A requested cancel is not capacity release: retain its pending exposure
+    # until a complete authoritative state cohort confirms the resulting state.
+    exposure_reservations.record_cancel_intent(bot, orders)
     wave = getattr(bot, "_order_wave_in_progress", None)
     connector_call_context = {
         "action": "cancel",

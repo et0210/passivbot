@@ -6,6 +6,7 @@ from live import executor
 from live.event_bus import EventTypes, ReasonCodes
 from live.order_churn_gate import OrderChurnGateState
 from passivbot import Passivbot
+from exposure_test_support import provide_exposure_state
 
 
 def _order(name: str, *, execution_type: str = "limit", panic: bool = False) -> dict:
@@ -650,6 +651,10 @@ async def test_account_invalidation_rechecked_inside_each_connector_task(
         )
         for i in range(2)
     ]
+    # Limit entries need a complete, coherent fixture account to exercise the
+    # connector race. Market entries have no proven price bound and must remain
+    # blocked by the exposure gate, even with otherwise complete state.
+    provide_exposure_state(bot, orders)
     from live.fresh_entry_eligibility import FreshEntryEligibilityTrace
 
     trace = FreshEntryEligibilityTrace()
@@ -668,7 +673,11 @@ async def test_account_invalidation_rechecked_inside_each_connector_task(
         bot, [], orders, configure_creations=not dedicated_panic
     )
 
-    expected_calls = 2 if dedicated_panic else int(invalidate_at == "first_connector")
+    expected_calls = (
+        2 if dedicated_panic else
+        0 if order_kind == "market_entry" else
+        int(invalidate_at == "first_connector")
+    )
     assert len(calls) == expected_calls
     assert len(eligibility) == 1
     assert sum(row["eligible_count"] for row in eligibility[0]["records"]) == (
@@ -685,10 +694,10 @@ async def test_account_invalidation_rechecked_inside_each_connector_task(
     assert not any(
         event["event_type"] == EventTypes.EXECUTION_AMBIGUOUS for event in order_events
     )
-    assert (
-        sum(
-            event["event_type"] == EventTypes.EXECUTION_CREATE_SKIPPED
-            for event in filter_events
-        )
-        == 2 - expected_calls
-    )
+    expected_skipped_events = 0 if order_kind == "market_entry" else 2 - expected_calls
+    assert sum(
+        event["event_type"] == EventTypes.EXECUTION_CREATE_SKIPPED
+        for event in filter_events
+    ) == expected_skipped_events
+    if order_kind == "market_entry":
+        assert sum(row["eligible_count"] for row in eligibility[0]["records"]) == 0

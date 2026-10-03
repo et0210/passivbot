@@ -2456,10 +2456,28 @@ async def test_reconstruction_scope_recovery_with_fake_exchange(tmp_path, monkey
         for _ in range(2):
             await bot._equity_hard_stop_check()
         if case == 'cross_pair_flat':
-            result = await original_cycle(bot)
-            assert any(order['side'] == 'buy' for order in bot.cca.open_orders.values()) or any(
+            from live import executor
+            risk_warnings = []
+            original_warning = executor.logging.warning
+
+            def capture_reservation_warning(*args, **kwargs):
+                if args and str(args[0]).startswith(
+                    "[risk] entry orders deferred by exposure reservation"
+                ):
+                    risk_warnings.append(args)
+                return original_warning(*args, **kwargs)
+
+            monkeypatch.setattr(executor.logging, 'warning', capture_reservation_warning)
+            # The cycle returns None by contract; reaching this point means it
+            # completed normally. The warning records the reservation decision.
+            await original_cycle(bot)
+            assert risk_warnings, 'planned entries must be explicitly deferred by the exposure gate'
+            assert risk_warnings[0][1] > 0, risk_warnings[0]
+            result = {'ordinary_completed': True, 'entry_deferred': True}
+            assert not any(
                 fill.get('side') == 'buy' and fill.get('id') not in {'10', '11', '12', '13'}
-                for fill in bot.cca.fills), 'flat bot could not place first entries'
+                for fill in bot.cca.fills
+            ), 'an entry blocked by exposure reservation must not fill'
         else:
             result = {'reconstruction_ready': True}
         seen.append((state['last_metrics']['drawdown_raw'], state['pnl_reset_timestamp_ms']))

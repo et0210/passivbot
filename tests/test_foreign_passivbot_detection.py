@@ -2,6 +2,7 @@ import logging
 
 import pytest
 import passivbot_rust as pbr
+from exposure_test_support import provide_exposure_state
 
 
 def _pb_custom_id(order_type: str, suffix: str) -> str:
@@ -79,6 +80,7 @@ async def test_execute_orders_parent_tracks_acknowledged_custom_id():
         "reduce_only": False,
         "custom_id": custom_id,
     }
+    provide_exposure_state(bot, [order])
 
     res = await pb_mod.Passivbot.execute_orders_parent(bot, [order])
 
@@ -179,6 +181,7 @@ async def test_execute_orders_parent_tracks_ambiguous_create_error_custom_id(
         "custom_id": custom_id,
         "pb_order_type": "entry_grid_normal_long",
     }
+    provide_exposure_state(bot, [order])
 
     with caplog.at_level(logging.WARNING):
         res = await pb_mod.Passivbot.execute_orders_parent(bot, [order])
@@ -457,6 +460,7 @@ async def test_execute_order_plan_bounds_raised_create_exception_diagnostics(
         "custom_id": _pb_custom_id("entry_grid_normal_long", "batchfail"),
         "pb_order_type": "entry_grid_normal_long",
     }
+    provide_exposure_state(bot, [order])
 
     with caplog.at_level(logging.ERROR):
         await pb_mod.Passivbot.execute_order_plan_to_exchange(
@@ -541,6 +545,7 @@ async def test_execute_orders_parent_tracks_empty_create_response_as_ambiguous()
         "custom_id": _pb_custom_id("entry_grid_normal_long", "empty"),
         "pb_order_type": "entry_grid_normal_long",
     }
+    provide_exposure_state(bot, [order])
 
     res = await pb_mod.Passivbot.execute_orders_parent(bot, [order])
 
@@ -627,6 +632,7 @@ async def test_execute_orders_parent_tracks_partial_create_response_as_ambiguous
             "pb_order_type": "entry_grid_normal_long",
         },
     ]
+    provide_exposure_state(bot, orders)
 
     with caplog.at_level(logging.WARNING):
         res = await pb_mod.Passivbot.execute_orders_parent(bot, orders)

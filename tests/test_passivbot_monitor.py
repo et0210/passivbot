@@ -5086,6 +5086,7 @@ def test_fills_refresh_debug_profile_adds_bounded_coverage_shape():
 @pytest.mark.asyncio
 async def test_execute_orders_parent_records_order_opened_event():
     import passivbot as pb_mod
+    from exposure_test_support import provide_exposure_state
 
     sink = ListEventSink()
 
@@ -5165,6 +5166,7 @@ async def test_execute_orders_parent_records_order_opened_event():
         "reduce_only": False,
         "custom_id": "cid123",
     }
+    provide_exposure_state(bot, [order])
 
     res = await pb_mod.Passivbot.execute_orders_parent(bot, [order])
 

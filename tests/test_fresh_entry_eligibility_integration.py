@@ -8,6 +8,7 @@ from live.fresh_entry_eligibility import FreshEntryEligibilityTrace
 from live.market_snapshot import MarketSnapshot
 from live.order_churn_gate import OrderChurnGateState
 from passivbot import Passivbot
+from exposure_test_support import provide_exposure_state
 
 
 def _initial(symbol: str, pside: str = "long", *, price: float = 100.0) -> dict:
@@ -269,6 +270,7 @@ async def test_final_batch_cap_classifies_eligible_and_blocked_without_changing_
     trace.record_evaluated(first["symbol"], "long")
     trace.record_evaluated(second["symbol"], "long")
     bot = _CreateBot(trace)
+    provide_exposure_state(bot, [first, second])
     emitted = []
 
     monkeypatch.setattr(Passivbot, "_record_emitted_order_custom_id", lambda *args, **kwargs: None)
@@ -583,6 +585,7 @@ async def test_eligibility_emitter_failure_cannot_change_connector_batch(monkeyp
     trace.record_ideal_orders([order])
     trace.record_evaluated(order["symbol"], "long")
     bot = _CreateBot(trace)
+    provide_exposure_state(bot, [order])
 
     monkeypatch.setattr(Passivbot, "_record_emitted_order_custom_id", lambda *args, **kwargs: None)
     monkeypatch.setattr(Passivbot, "_emit_execution_order_event", lambda *args, **kwargs: None)
@@ -605,6 +608,7 @@ async def test_connector_bound_create_attempt_is_counted_once_even_when_ambiguou
 ):
     order = _initial("BTC/USDT:USDT")
     bot = _CreateBot(FreshEntryEligibilityTrace())
+    provide_exposure_state(bot, [order])
     bot._order_churn_gate_state = OrderChurnGateState()
 
     from types import SimpleNamespace
@@ -667,6 +671,7 @@ async def test_restart_after_mixed_create_results_omits_unclassified_eligibility
     for order in orders:
         trace.record_evaluated(order["symbol"], "long")
     bot = _CreateBot(trace)
+    provide_exposure_state(bot, orders)
     live_value = bot.live_value
     bot.live_value = lambda key: (
         2 if key == "max_n_creations_per_batch" else live_value(key)
